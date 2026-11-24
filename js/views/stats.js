@@ -9,13 +9,28 @@ import { esc, fmtNum, fmtDelta, plural } from '../format.js';
 import { completedSessions, plannedOn } from '../model.js';
 import {
   buildExerciseIndex, weekFeedback, monthFeedback, weekStats, monthStats, overallStats, overallFeedback,
-  analyzeExercise, exerciseFeedback, describeSets, describeTop, describeDiff,
+  analyzeExercise, exerciseFeedback, describeSets, describeTop, describeDiff, periodMuscleSets,
 } from '../analytics.js';
+import { catalogFor, MUSCLES } from '../catalog.js';
 import { feedbackList, verdictBadge, trendBadge, icon } from '../ui.js';
 import { chartSlot } from '../charts.js';
-import { emptyState, refsTable, weekdayOf } from './common.js';
+import { emptyState, refsTable, weekdayOf, musclesText, unitShort } from './common.js';
 
-const MODES = [['woche', 'Woche'], ['monat', 'Monat'], ['gesamt', 'Gesamt'], ['uebungen', 'Übungen']];
+// Balken: Sätze je Muskelgruppe im Zeitraum (laut Katalog).
+function muscleCard(data, start, end, title) {
+  const ms = periodMuscleSets(data, start, end);
+  if (!ms.list.length && !ms.unassigned) return '';
+  const max = Math.max(1, ...ms.list.map((m) => m.sets));
+  return `<section class="card"><h2>${esc(title)}</h2>
+    <p class="small muted">Sätze, an denen der Bereich laut Übungskatalog beteiligt ist – ein Satz zählt für jeden beteiligten Bereich.</p>
+    <div class="muscle-bars">${ms.list.map((m) => `
+      <div class="mb-row"><span>${esc(m.label)}</span><span class="mb-track" aria-hidden="true"><span style="width:${Math.round((m.sets / max) * 100)}%"></span></span><strong>${m.sets}</strong></div>`).join('')}</div>
+    ${ms.missing.length ? `<p class="small" style="margin-top:12px"><strong>Ohne Satz:</strong> ${esc(ms.missing.map((m) => MUSCLES[m]).join(', '))}</p>` : ''}
+    ${ms.unassigned ? `<p class="small muted">${plural(ms.unassigned, 'Satz', 'Sätze')} aus eigenen Übungen ohne Katalogeintrag sind nicht zugeordnet.</p>` : ''}
+  </section>`;
+}
+
+const MODES = [['woche', 'Woche'], ['monat', 'Monat'], ['gesamt', 'Gesamt'], ['uebungen', 'Fortschritt']];
 
 function modeNav(active) {
   return `<nav class="segmented" aria-label="Auswertungszeitraum">${MODES.map(([k, l]) => `<a href="#/auswertung/${k}" ${k === active ? 'aria-current="page" class="on"' : ''}>${l}</a>`).join('')}</nav>`;
@@ -60,7 +75,7 @@ function avgLabel(n, one, many) {
 
 function adherenceHero(st, periodWord) {
   const pct = st.plannedCount ? Math.min(100, Math.round((st.count / st.plannedCount) * 100)) : null;
-  return `<div class="hero">
+  return `<div class="hero-stat">
     <div><strong class="hero-num">${st.count}${st.plannedCount ? `<span class="hero-of"> / ${st.plannedCount}</span>` : ''}</strong>
     <span class="hero-label">${st.plannedCount ? `geplante Einheiten ${periodWord} absolviert` : `${st.count === 1 ? 'Einheit' : 'Einheiten'} ${periodWord} – kein Training geplant`}</span></div>
     ${pct != null ? `<div class="meter" role="meter" aria-valuemin="0" aria-valuemax="${st.plannedCount}" aria-valuenow="${Math.min(st.count, st.plannedCount)}" aria-label="Plan-Erfüllung"><span style="width:${pct}%"></span></div>` : ''}
@@ -132,7 +147,8 @@ function weekMode(param) {
       ${tile('Volumen', st.volume, fb.prev.volume, avgOf(prev4, 'volume'), 'Vorwoche', prevLbl, { unit: ' kg' })}
     </div>
     ${st.ongoing ? '<p class="small muted">Die aktuelle Woche läuft noch – Vergleiche mit abgeschlossenen Wochen sind vorläufig.</p>' : ''}
-    <section class="card"><h2>Feedback</h2>${feedbackList(fb.msgs)}</section>
+    <section class="card"><h2>Feedback</h2>${feedbackList(fb.msgs.filter((m) => m.kind !== 'muscles'))}</section>
+    ${muscleCard(data, ws, addDays(ws, 6), 'Trainierte Bereiche')}
     <section class="card"><h2>Wochenvergleich</h2>
       <div class="table-wrap"><table class="table num">
         <thead><tr><th scope="col">Woche</th><th scope="col">Einheiten (absolviert / geplant)</th><th scope="col">Sätze</th><th scope="col">Wdh.</th><th scope="col">Volumen</th></tr></thead>
@@ -311,6 +327,10 @@ const METRICS_BW = [
   ['max', 'Max. Wdh. pro Satz', (e) => e.maxReps, ' Wdh.', true],
   ['total', 'Wdh. gesamt', (e) => e.totalReps, ' Wdh.', true],
 ];
+const metricsTime = (unit) => [
+  ['max', 'Längster Satz', (e) => e.maxReps, ` ${unitShort(unit)}`, true],
+  ['total', 'Gesamtdauer', (e) => e.totalReps, ` ${unitShort(unit)}`, true],
+];
 
 export function exerciseView([key], params) {
   const data = store.data;
@@ -323,7 +343,9 @@ export function exerciseView([key], params) {
     };
   }
   const an = analyzeExercise(rec);
-  const metrics = an.weighted ? METRICS_W : METRICS_BW;
+  const unit = rec.unit ?? 'wdh';
+  const metrics = unit !== 'wdh' ? metricsTime(unit) : an.weighted ? METRICS_W : METRICS_BW;
+  const cat = catalogFor({ name: rec.name, catalogId: rec.catalogId });
   const m = metrics.find((x) => x[0] === params.get('m')) ?? metrics[0];
   const [mKey, mLabel, mFn, mUnit, mInt] = m;
   const entries = an.entries.filter((e) => mFn(e) != null && (!an.weighted || e.weighted || mKey === 'volume'));
@@ -341,11 +363,24 @@ export function exerciseView([key], params) {
 
   const histRows = [...an.entries].reverse().map((e) => `<tr>
     <th scope="row"><a href="#/verlauf/${e.sessionId}">${fmtDate(e.date)}</a><span class="small muted block">${weekdayOf(e.date)} · ${relativeLabel(e.date, today)}</span></th>
-    <td>${esc(describeSets(e))}</td><td>${esc(describeTop(e, an.weighted))}</td><td>${e.totalReps}</td><td>${e.volume ? `${fmtNum(e.volume, 0)} kg` : '–'}</td></tr>`).join('');
+    <td>${esc(describeSets(e))}</td><td>${esc(describeTop(e, an.weighted))}</td><td>${e.totalReps}${unit === 'wdh' ? '' : ` ${unitShort(unit)}`}</td><td>${e.volume ? `${fmtNum(e.volume, 0)} kg` : '–'}</td></tr>`).join('');
+
+  const explain = unit !== 'wdh'
+    ? 'Verglichen wird die Dauer: zuerst der längste Satz, dann die Gesamtdauer aller abgehakten Sätze.'
+    : an.weighted
+      ? 'Verglichen wird zuerst das Gewicht im schwersten Satz, dann die Wiederholungen mit diesem Gewicht; ist beides gleich, entscheidet das Gesamtvolumen (Gewicht × Wiederholungen).'
+      : 'Verglichen werden zuerst die meisten Wiederholungen in einem Satz, dann die Wiederholungen insgesamt.';
 
   return {
     title: an.name, tab: 'auswertung', back: '#/auswertung/uebungen',
     html: `
+      <section class="card">
+        <span class="eyebrow">Fortschritt</span>
+        <h2>${esc(an.name)}</h2>
+        ${cat ? `<p class="meta-row">${icon('target')}<span>Trainiert laut Katalog: ${esc(musclesText(cat))}</span></p>
+          <p class="small"><a href="#/katalog/${cat.id}">${icon('book')} Anleitung und Quelle ansehen</a></p>` : '<p class="small muted">Eigene Übung ohne Katalogeintrag.</p>'}
+        <p class="small muted">${esc(explain)} Alle Angaben beruhen auf deinen gespeicherten Einheiten.</p>
+      </section>
       <div class="tiles">
         <div class="tile"><span class="tile-label">Einheiten</span><strong class="tile-value">${an.count}</strong><span class="tile-sub muted">seit ${fmtDate(an.entries[0].date)}</span></div>
         <div class="tile"><span class="tile-label">Zuletzt</span><strong class="tile-value tv-small">${esc(describeTop(an.latest, an.weighted))}</strong><span class="tile-sub muted">${fmtDate(an.latest.date)}</span></div>
@@ -360,8 +395,8 @@ export function exerciseView([key], params) {
       <section class="card"><h2>Feedback</h2>${feedbackList(exerciseFeedback(an, today), { linkExercises: false })}</section>
       <section class="card"><h2>Vergleiche</h2>${refsTable(an)}</section>
       <section class="card"><h2>Alle Einheiten (${an.count})</h2>
-        <div class="table-wrap"><table class="table">
-          <thead><tr><th scope="col">Datum</th><th scope="col">Sätze</th><th scope="col">Bester Satz</th><th scope="col">Wdh. gesamt</th><th scope="col">Volumen</th></tr></thead>
+        <div class="table-wrap"><table class="table" data-unit="${unit}">
+          <thead><tr><th scope="col">Datum</th><th scope="col">Sätze</th><th scope="col">Bester Satz</th><th scope="col">${unit === 'wdh' ? 'Wdh. gesamt' : 'Gesamtdauer'}</th><th scope="col">Volumen</th></tr></thead>
           <tbody>${histRows}</tbody></table></div></section>
       <details class="card method"><summary>Wie wird verglichen?</summary>
         <p class="small">Mit Gewicht zählt zuerst das Gewicht im schwersten Satz, dann die Wiederholungen mit diesem Gewicht; ist beides gleich, entscheidet das Gesamtvolumen (Gewicht × Wiederholungen). Ohne Gewicht zählen die meisten Wiederholungen in einem Satz und dann die Gesamtwiederholungen.

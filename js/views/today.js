@@ -1,13 +1,29 @@
-// Startseite: heutiges Training, laufende Einheit, Wochenstand und aktuelles Feedback.
+// Startseite: heutiges Training (Hero-Karte), laufende Einheit, Wochenstand und Feedback.
 
 import { store } from '../store.js';
 import { todayISO, fmtDate, fmtDateLong, startOfWeek, addDays, WEEKDAYS_SHORT, relativeLabel } from '../dates.js';
 import { esc, plural } from '../format.js';
-import { activeSession, completedSessions, findDay, plannedOn, exerciseKey } from '../model.js';
-import { buildExerciseIndex, weekFeedback, analyzeExercise, exerciseFeedback } from '../analytics.js';
+import { activeSession, completedSessions, findDay, plannedOn, unitOf } from '../model.js';
+import { buildExerciseIndex, weekFeedback, analyzeExercise, exerciseFeedback, indexKey } from '../analytics.js';
 import { onAction, feedbackList, icon } from '../ui.js';
-import { openStartSheet, startTraining, sessionSummary } from './common.js';
+import { openStartSheet, startTraining, sessionSummary, dayFocus, focusLabel } from './common.js';
 import { lastExportAt } from './settings.js';
+
+function heroFor(day, { done }) {
+  const sets = day.exercises.reduce((a, e) => a + Number(e.sets || 0), 0);
+  const focus = focusLabel(dayFocus(day));
+  return `
+    <section class="hero">
+      <div class="hero-top">
+        <span class="hero-tag">${icon(done ? 'check' : 'today')}${done ? 'Heute erledigt' : 'Heute geplant'}</span>
+        ${focus ? `<span class="hero-tag">${icon('target')}${esc(focus)}</span>` : ''}
+      </div>
+      <div class="hero-info">
+        <div><h3>${esc(day.name)}</h3><p class="meta">${icon('dumbbell')}${plural(day.exercises.length, 'Übung', 'Übungen')} · ${plural(sets, 'Satz', 'Sätze')}</p></div>
+        <button class="btn primary" data-action="start-planned" data-id="${day.id}">${done ? 'Nochmal' : 'Starten'}</button>
+      </div>
+    </section>`;
+}
 
 export function todayView() {
   const data = store.data;
@@ -19,17 +35,22 @@ export function todayView() {
     return {
       title: 'Heute', tab: 'heute',
       html: `
-        <section class="card welcome">
-          <h2>Willkommen!</h2>
-          <p>Hier stellst du deinen <strong>eigenen Trainingsplan</strong> zusammen – die App gibt dir keinen Plan vor.
-          Du legst fest, an welchen Tagen du trainierst, welche Übungen dazugehören, in welcher Reihenfolge und mit wie vielen Sätzen und Wiederholungen.</p>
+        <section class="hello"><span class="eyebrow">${esc(fmtDateLong(today))}</span><h2>Willkommen!</h2></section>
+        <section class="hero">
+          <div class="hero-top"><span class="hero-tag">${icon('sparkle')}Dein Training, dein Plan</span></div>
+          <div class="hero-info"><div><h3>Stell deinen Plan zusammen</h3><p class="meta">${icon('layers')}Vorlage als Start oder ganz eigener Plan</p></div></div>
+        </section>
+        <div class="quick-grid">
+          <a class="quick" href="#/vorlagen"><span class="q-ico">${icon('layers')}</span><strong>Mit Vorlage starten</strong><span>Push/Pull/Beine, Ganzkörper, Cardio, Mobility … – danach frei anpassbar</span></a>
+          <button class="quick" data-action="create-plan" style="text-align:left;cursor:pointer"><span class="q-ico">${icon('edit')}</span><strong>Eigenen Plan erstellen</strong><span>Tage, Übungen, Sätze und Wiederholungen selbst festlegen</span></button>
+        </div>
+        <section class="card">
           <ol class="steps">
-            <li>Plan anlegen und Trainingstage mit Wochentagen festlegen</li>
-            <li>Übungen mit Sätzen, Wiederholungen und optional Gewicht, Pause und Notizen eintragen</li>
+            <li>Trainingstage mit Wochentagen und Schwerpunkt festlegen</li>
+            <li>Übungen aus dem Katalog wählen oder eigene anlegen</li>
             <li>Trainings erfassen – jede Einheit wird dauerhaft gespeichert und ausgewertet</li>
           </ol>
-          <button class="btn primary big" data-action="create-plan">${icon('plus')}Eigenen Plan erstellen</button>
-          <button class="btn link" data-action="start-free">Ohne Plan ein freies Training erfassen</button>
+          <button class="btn ghost wide" data-action="start-free">Ohne Plan ein freies Training erfassen</button>
         </section>`,
     };
   }
@@ -38,20 +59,26 @@ export function todayView() {
   const wk = weekFeedback(data, index, startOfWeek(today), today);
   const todays = plannedOn(data, today);
   const doneToday = done.filter((s) => s.date === today);
+  const plannedDays = todays.map((p) => findDay(data.plan, p.dayId)).filter(Boolean);
 
-  const todayBlock = todays.length
-    ? `<ul class="list">${todays.map((p) => {
-      const day = findDay(data.plan, p.dayId);
-      const already = doneToday.some((s) => s.dayId === p.dayId);
-      return `<li class="card today-item">
-          <div><strong>${esc(day?.name ?? p.name)}</strong>
-            <span class="small muted">${day ? plural(day.exercises.length, 'Übung', 'Übungen') : 'Trainingstag existiert nicht mehr'}${already ? ' · heute bereits erledigt' : ''}</span></div>
-          ${day && !running ? `<button class="btn ${already ? '' : 'primary'}" data-action="start-planned" data-id="${day.id}">${icon('play')}Starten</button>` : ''}
-        </li>`;
-    }).join('')}</ul>`
-    : `<p class="muted">Heute ist kein Training geplant.${data.plan ? '' : ' Du hast noch keinen Plan angelegt.'}</p>`;
+  let hero;
+  if (running) {
+    hero = `<section class="hero">
+      <div class="hero-top"><span class="hero-tag">${icon('play')}Training läuft</span></div>
+      <div class="hero-info"><div><h3>${esc(running.title)}</h3><p class="meta">${icon('clock')}${fmtDate(running.date)} · ${esc(sessionSummary(running))}</p></div>
+        <a class="btn primary" href="#/training/${running.id}">Weiter</a></div>
+    </section>`;
+  } else if (plannedDays.length) {
+    hero = plannedDays.map((d) => heroFor(d, { done: doneToday.some((s) => s.dayId === d.id) })).join('');
+  } else {
+    hero = `<section class="hero plain">
+      <div class="hero-top"><span class="hero-tag">${icon('today')}Heute</span></div>
+      <div class="hero-info"><div><h3>Kein Training geplant</h3><p class="meta">${icon('sparkle')}${data.plan ? 'Du kannst trotzdem trainieren oder nachtragen' : 'Noch kein Plan angelegt'}</p></div>
+        <button class="btn primary" data-action="start-other">Starten</button></div>
+    </section>`;
+  }
 
-  // Wochenleiste Mo–So: geplant / absolviert
+  // Wochenleiste Mo–So
   const ws = startOfWeek(today);
   const strip = WEEKDAYS_SHORT.map((wd, i) => {
     const d = addDays(ws, i);
@@ -68,31 +95,27 @@ export function todayView() {
   let lastFb = [];
   if (last) {
     for (const ex of last.exercises) {
-      const rec = index.get(exerciseKey(ex.name));
+      const rec = index.get(indexKey(ex.name, unitOf(ex)));
       const idx = rec ? rec.entries.findIndex((e) => e.sessionId === last.id) : -1;
       if (idx >= 0) lastFb.push(...exerciseFeedback(analyzeExercise(rec, idx), today, { brief: true }));
     }
     lastFb = [...lastFb.filter((m) => m.tone !== 'neutral'), ...lastFb.filter((m) => m.tone === 'neutral')].slice(0, 6);
   }
 
-  // Reiner Handy-Modus: an regelmäßige Sicherung erinnern
   const exp = lastExportAt();
   const needsBackup = store.deviceOnly && done.length >= 3 && (!exp || Date.now() - new Date(exp).getTime() > 14 * 86400000);
+  const greeting = running ? 'Weiter geht’s!' : plannedDays.length ? 'Bereit fürs Training?' : 'Hallo!';
 
   return {
     title: 'Heute', tab: 'heute',
     html: `
-      ${needsBackup ? `<a class="card banner-warn" href="#/einstellungen">Deine Daten liegen nur auf diesem Gerät. ${exp ? 'Letzte Sicherung ist über 2 Wochen her' : 'Du hast noch keine Sicherung exportiert'} – tippe hier, um sie zu exportieren.</a>` : ''}
-      ${running ? `<a class="card banner-live" href="#/training/${running.id}">${icon('play')}<span><strong>Training läuft: ${esc(running.title)}</strong><span class="small">${fmtDate(running.date)} · tippen zum Fortsetzen</span></span></a>` : ''}
-      <section class="card">
-        <span class="eyebrow">${esc(fmtDateLong(today))}</span>
-        <h2>Heute geplant</h2>
-        ${todayBlock}
-        ${running ? '' : `<button class="btn" data-action="start-other">${icon('plus')}Anderes Training starten oder nachtragen</button>`}
-      </section>
+      ${needsBackup ? `<a class="card banner-warn" href="#/einstellungen">Deine Daten liegen nur auf diesem Gerät. ${exp ? 'Die letzte Sicherung ist über 2 Wochen her' : 'Du hast noch keine Sicherung exportiert'} – tippe hier, um sie zu exportieren.</a>` : ''}
+      <section class="hello"><span class="eyebrow">${esc(fmtDateLong(today))}</span><h2>${greeting}</h2></section>
+      ${hero}
+      ${running ? '' : `<button class="btn ghost wide" data-action="start-other" style="margin-bottom:16px">${icon('plus')}Anderes Training oder nachtragen</button>`}
 
       <section class="card">
-        <div class="section-head"><h2>Diese Woche</h2><a class="small" href="#/auswertung/woche">Wochenauswertung</a></div>
+        <div class="section-head"><h2>Diese Woche</h2><a class="small" href="#/auswertung/woche">Auswertung</a></div>
         <ul class="week-strip" aria-label="Wochenübersicht">${strip}</ul>
         ${feedbackList([wk.msgs[0]], { linkExercises: false })}
       </section>
@@ -104,8 +127,10 @@ export function todayView() {
         ${feedbackList(lastFb, { empty: 'Noch keine Vergleichswerte – ab der zweiten Einheit einer Übung siehst du hier Veränderungen.' })}
       </section>` : ''}
 
-      ${!data.plan ? `<section class="card"><h2>Kein Plan angelegt</h2><p class="muted">Lege einen eigenen Plan an, damit geplante und absolvierte Einheiten verglichen werden können.</p>
-        <button class="btn primary" data-action="create-plan">${icon('plus')}Plan erstellen</button></section>` : ''}`,
+      ${!data.plan ? `<div class="quick-grid">
+        <a class="quick" href="#/vorlagen"><span class="q-ico">${icon('layers')}</span><strong>Vorlage wählen</strong><span>als Startpunkt für deinen Plan</span></a>
+        <button class="quick" data-action="create-plan" style="text-align:left;cursor:pointer"><span class="q-ico">${icon('edit')}</span><strong>Eigener Plan</strong><span>alles selbst festlegen</span></button>
+      </div>` : ''}`,
   };
 }
 

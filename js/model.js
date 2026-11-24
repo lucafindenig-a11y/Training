@@ -60,6 +60,23 @@ export function exerciseKey(name) {
   return String(name ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+// ---------- Einheiten ----------
+// Ältere Einträge ohne „unit“ zählen als Wiederholungen. Die Menge steht immer im Feld „reps“.
+
+export const UNITS = {
+  wdh: { short: 'Wdh.', label: 'Wiederholungen' },
+  sek: { short: 's', label: 'Sekunden' },
+  min: { short: 'Min.', label: 'Minuten' },
+};
+
+export function unitOf(x) {
+  return x && UNITS[x.unit] ? x.unit : 'wdh';
+}
+
+export function fmtAmount(n, unit = 'wdh') {
+  return `${n} ${UNITS[unit]?.short ?? 'Wdh.'}`;
+}
+
 // ---------- Eingaben für Planübungen ----------
 
 export function parseRepsTarget(value) {
@@ -94,8 +111,9 @@ export function validateExerciseFields(f) {
   else if (name.length > 80) errors.name = 'Höchstens 80 Zeichen.';
   const sets = Number(String(f.sets ?? '').trim());
   if (!Number.isInteger(sets) || sets < 1 || sets > 30) errors.sets = 'Ganze Zahl von 1 bis 30.';
+  const unit = UNITS[f.unit] ? f.unit : 'wdh';
   const target = parseRepsTarget(f.reps);
-  if (!target) errors.reps = 'Zahl oder Bereich, z. B. 10 oder 8-12.';
+  if (!target) errors.reps = unit === 'wdh' ? 'Zahl oder Bereich, z. B. 10 oder 8-12.' : 'Dauer als Zahl oder Bereich, z. B. 30 oder 30-45.';
   const weightRaw = String(f.weight ?? '').trim();
   const weight = parseNum(weightRaw);
   if (weightRaw !== '' && (weight == null || weight < 0 || weight > 1000)) errors.weight = 'Gewicht in kg, z. B. 62,5.';
@@ -108,8 +126,14 @@ export function validateExerciseFields(f) {
     weight: weightRaw === '' ? null : weight,
     rest: rest || null,
     notes: String(f.notes ?? '').trim(),
+    unit,
+    catalogId: typeof f.catalogId === 'string' && f.catalogId ? f.catalogId : null,
   };
   return { ok: Object.keys(errors).length === 0, errors, value };
+}
+
+export function normFocus(list) {
+  return [...new Set((list ?? []).filter((x) => typeof x === 'string' && x))];
 }
 
 // ---------- Plan ----------
@@ -129,8 +153,8 @@ export function normWeekdays(list) {
   return [...new Set((list ?? []).map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n <= 6))].sort((a, b) => a - b);
 }
 
-export function addDay(plan, { name, weekdays = [] }) {
-  const day = { id: uid(), name: String(name).trim(), weekdays: normWeekdays(weekdays), exercises: [] };
+export function addDay(plan, { name, weekdays = [], focus = [] }) {
+  const day = { id: uid(), name: String(name).trim(), weekdays: normWeekdays(weekdays), focus: normFocus(focus), exercises: [] };
   plan.days.push(day);
   return day;
 }
@@ -153,6 +177,7 @@ export function duplicateDay(plan, id) {
     id: uid(),
     name: `${src.name} (Kopie)`,
     weekdays: [],
+    focus: [...(src.focus ?? [])],
     exercises: src.exercises.map((ex) => ({ ...ex, id: uid() })),
   };
   plan.days.splice(i + 1, 0, copy);
@@ -247,7 +272,7 @@ export function performedSets(ex) {
     .map((s) => ({ reps: Number(s.reps), weight: Number(s.weight) > 0 ? Number(s.weight) : 0 }));
 }
 
-export function newSessionExercise({ name, target = null, planExerciseId = null }, lastSets = null) {
+export function newSessionExercise({ name, target = null, planExerciseId = null, catalogId = null, unit = 'wdh' }, lastSets = null) {
   const repsTarget = target ? parseRepsTarget(target.reps) : null;
   const count = target?.sets ?? lastSets?.length ?? 3;
   const sets = Array.from({ length: count }, (_, i) => {
@@ -258,7 +283,10 @@ export function newSessionExercise({ name, target = null, planExerciseId = null 
       done: false,
     };
   });
-  return { id: uid(), name: String(name).trim(), planExerciseId, target, skipped: false, notes: '', sets };
+  const ex = { id: uid(), name: String(name).trim(), planExerciseId, target, skipped: false, notes: '', sets };
+  if (catalogId) ex.catalogId = catalogId;
+  if (UNITS[unit] && unit !== 'wdh') ex.unit = unit;
+  return ex;
 }
 
 // lastSetsFor(name) liefert die zuletzt absolvierten Sätze dieser Übung (für Vorschläge).
@@ -278,8 +306,12 @@ export function createSession(data, { dayId = null, date, now = new Date().toISO
   };
   if (day) {
     for (const ex of day.exercises) {
-      const target = { sets: ex.sets, reps: ex.reps, weight: ex.weight ?? null, rest: ex.rest ?? null, notes: ex.notes ?? '' };
-      session.exercises.push(newSessionExercise({ name: ex.name, target, planExerciseId: ex.id }, lastSetsFor(ex.name)));
+      const unit = unitOf(ex);
+      const target = { sets: ex.sets, reps: ex.reps, weight: ex.weight ?? null, rest: ex.rest ?? null, notes: ex.notes ?? '', unit };
+      session.exercises.push(newSessionExercise(
+        { name: ex.name, target, planExerciseId: ex.id, catalogId: ex.catalogId ?? null, unit },
+        lastSetsFor(ex.name, unit),
+      ));
     }
   }
   data.sessions.push(session);
@@ -305,21 +337,27 @@ export function deleteSession(data, id) {
   if (i >= 0) data.sessions.splice(i, 1);
 }
 
+// Wiederholungen und Volumen zählen nur bei Übungen mit Wiederholungen; Zeitübungen zählen als Sekunden.
 export function sessionTotals(session) {
-  const t = { exercises: session.exercises.length, performed: 0, skipped: 0, sets: 0, setsSkipped: 0, reps: 0, volume: 0 };
+  const t = { exercises: session.exercises.length, performed: 0, skipped: 0, sets: 0, setsSkipped: 0, reps: 0, volume: 0, seconds: 0 };
   for (const ex of session.exercises) {
     if (ex.skipped) {
       t.skipped++;
       continue;
     }
+    const unit = unitOf(ex);
     const done = performedSets(ex);
     if (done.length) t.performed++;
     else t.skipped++;
     t.sets += done.length;
     t.setsSkipped += ex.sets.length - done.length;
     for (const s of done) {
-      t.reps += s.reps;
-      t.volume += s.reps * s.weight;
+      if (unit === 'wdh') {
+        t.reps += s.reps;
+        t.volume += s.reps * s.weight;
+      } else {
+        t.seconds += unit === 'min' ? s.reps * 60 : s.reps;
+      }
     }
   }
   return t;

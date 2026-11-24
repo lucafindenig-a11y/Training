@@ -4,7 +4,7 @@ import { store, replaceAllData } from '../store.js';
 import { todayISO, fmtDate, toISO } from '../dates.js';
 import { esc, plural } from '../format.js';
 import { validateData } from '../model.js';
-import { onAction, onChange, confirmDialog, toast, icon, rerender } from '../ui.js';
+import { onAction, onChange, confirmDialog, toast, icon, rerender, applyTheme, themePreference } from '../ui.js';
 
 export function settingsView() {
   const d = store.data;
@@ -12,8 +12,15 @@ export function settingsView() {
   const saved = store.lastSavedAt ? new Date(store.lastSavedAt) : null;
   const savedText = saved ? `${fmtDate(toISO(saved))}, ${saved.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })} Uhr` : 'noch nie';
   return {
-    title: 'Daten & Sicherung', tab: null, back: '#/heute',
+    title: 'Einstellungen', tab: null, back: '#/heute',
     html: `
+      <section class="card">
+        <h2>Darstellung</h2>
+        <div class="segmented-input" role="radiogroup" aria-label="Darstellung" style="margin-top:12px">
+          ${[['hell', 'Hell'], ['dunkel', 'Dunkel'], ['system', 'Wie System']].map(([k, l]) => `
+            <label><input type="radio" name="theme" value="${k}" data-change="theme" ${themePreference() === k ? 'checked' : ''}><span>${l}</span></label>`).join('')}
+        </div>
+      </section>
       <section class="card">
         <h2>Speicherung</h2>
         ${store.deviceOnly
@@ -40,6 +47,11 @@ export function settingsView() {
         <h2>Import</h2>
         <p class="small muted">Ersetzt alle aktuellen Daten durch eine zuvor exportierte Datei – so überträgst du deine Daten z. B. vom PC aufs Handy oder umgekehrt.${store.deviceOnly ? ' Exportiere vorher den aktuellen Stand, falls du ihn behalten willst.' : ' Der bisherige Stand bleibt in der täglichen Sicherung des Servers erhalten.'}</p>
         <label class="btn file-btn">${icon('upload')}Datei auswählen …<input type="file" accept="application/json,.json" data-change="import" hidden></label>
+      </section>
+      <section class="card">
+        <h2>Übungsinfos</h2>
+        <p class="small muted">Die Anleitungen im Übungskatalog beruhen auf öffentlich zugänglichen Quellen (ACE, Concept2). Jede Übung verlinkt ihre Quelle.</p>
+        <a class="btn ghost" href="#/quellen">${icon('book')}Quellen & Hinweise</a>
       </section>`,
   };
 }
@@ -93,6 +105,8 @@ function lastExportText() {
   const at = lastExportAt();
   return at ? fmtDate(toISO(new Date(at))) : 'noch nie';
 }
+
+onChange('theme', (el) => applyTheme(el.value));
 
 onChange('import', async (el) => {
   const file = el.files?.[0];

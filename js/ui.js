@@ -62,21 +62,23 @@ export function installDelegation() {
 
 let sheetCleanup = null;
 
-export function openSheet({ title, body, submitLabel = 'Speichern', onSubmit, danger = false, focus = true }) {
+// footer:false ergibt ein Panel ohne Speichern-Knopf (z. B. Übungsauswahl); onMount(form) läuft nach dem Einfügen.
+export function openSheet({ title, body, submitLabel = 'Speichern', onSubmit = () => false, danger = false, focus = true, footer = true, tall = false, onMount = null }) {
   const root = document.getElementById('sheetRoot');
-  const lastFocus = document.activeElement;
+  const lastFocus = sheetCleanup ? null : document.activeElement;
+  sheetCleanup = null;
   root.innerHTML = `
     <div class="sheet-backdrop" data-sheet-close></div>
-    <form class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" novalidate>
+    <form class="sheet ${tall ? 'tall' : ''}" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" novalidate>
       <header class="sheet-head">
         <h2 id="sheetTitle">${esc(title)}</h2>
         <button type="button" class="icon-btn" data-sheet-close aria-label="Schließen">${icon('close')}</button>
       </header>
       <div class="sheet-body">${body}</div>
-      <footer class="sheet-foot">
+      ${footer ? `<footer class="sheet-foot">
         <button type="button" class="btn ghost" data-sheet-close>Abbrechen</button>
         <button type="submit" class="btn ${danger ? 'danger' : 'primary'}">${esc(submitLabel)}</button>
-      </footer>
+      </footer>` : ''}
     </form>`;
   root.classList.add('open');
   document.body.classList.add('no-scroll');
@@ -84,10 +86,11 @@ export function openSheet({ title, body, submitLabel = 'Speichern', onSubmit, da
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const result = await onSubmit(form);
-    if (result !== false) closeSheet();
+    if (result !== false && root.contains(form)) closeSheet();
   });
   root.querySelectorAll('[data-sheet-close]').forEach((b) => b.addEventListener('click', () => closeSheet()));
-  if (focus) form.querySelector('.sheet-body input:not([type=checkbox]):not([type=radio]), .sheet-body textarea, .sheet-body select')?.focus();
+  onMount?.(form);
+  if (focus) form.querySelector('.sheet-body input:not([type=checkbox]):not([type=radio]):not([type=hidden]), .sheet-body textarea, .sheet-body select')?.focus();
   sheetCleanup = () => lastFocus?.focus?.();
   return form;
 }
@@ -183,7 +186,47 @@ const PATHS = {
   mixed: '<path d="M7 4v16M3 8l4-4 4 4M17 20V4M13 16l4 4 4-4"/>',
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   upload: '<path d="M12 20V9M7 14l5-5 5 5M5 4h14"/>',
+  dumbbell: '<path d="M6.5 6.5v11M3.5 9v6M17.5 6.5v11M20.5 9v6M6.5 12h11"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
+  layers: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
+  heart: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
+  stretch: '<circle cx="12" cy="4.5" r="1.8"/><path d="M5 9l7 1 7-1M12 10v5l-4 6M12 15l4 6"/>',
+  target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".6"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  pin: '<path d="M12 21s-6-5.2-6-11a6 6 0 0 1 12 0c0 5.8-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/>',
+  bolt: '<path d="M13 3L5 14h6l-1 7 8-11h-6z"/>',
+  sparkle: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6"/>',
+  book: '<path d="M5 4h9a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h9"/>',
+  x: '<path d="M7 7l10 10M17 7L7 17"/>',
+  external: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
 };
+
+// ---------- Darstellung (Hell / Dunkel / wie System) ----------
+
+const THEME_KEY = 'trainingsplan.darstellung';
+
+export function themePreference() {
+  try {
+    return localStorage.getItem(THEME_KEY) || 'hell';
+  } catch {
+    return 'hell';
+  }
+}
+
+export function applyTheme(pref = themePreference()) {
+  try {
+    localStorage.setItem(THEME_KEY, pref);
+  } catch { /* ohne Speicher gilt die Auswahl nur für diese Sitzung */ }
+  const mq = window.matchMedia?.('(prefers-color-scheme: dark)');
+  const dark = pref === 'dunkel' || (pref === 'system' && mq?.matches);
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#0e0e14' : '#fafafd');
+  if (mq && !applyTheme.bound) {
+    applyTheme.bound = true;
+    mq.addEventListener?.('change', () => themePreference() === 'system' && applyTheme('system'));
+  }
+}
 
 export function icon(name, cls = '') {
   return `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${PATHS[name] ?? ''}</svg>`;

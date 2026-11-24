@@ -1,7 +1,7 @@
-// Einstieg: lädt die Daten, verdrahtet Router und Ansichten.
+// Einstieg: lädt die Daten, verdrahtet Router, Navigation und Darstellung.
 
 import { initStore, store, subscribe } from './store.js';
-import { installDelegation, setRenderer, icon } from './ui.js';
+import { installDelegation, setRenderer, icon, applyTheme } from './ui.js';
 import { resetCharts, mountCharts } from './charts.js';
 import { todayView } from './views/today.js';
 import { planView, dayView } from './views/plan.js';
@@ -9,11 +9,18 @@ import { sessionView } from './views/session.js';
 import { historyView, sessionDetailView } from './views/history.js';
 import { statsView, exerciseView } from './views/stats.js';
 import { settingsView } from './views/settings.js';
+import { catalogView, catalogDetailView, sourcesView } from './views/catalog.js';
+import { templatesView, templateDetailView } from './views/templates.js';
 
 const routes = [
   { re: /^\/heute$/, view: todayView },
   { re: /^\/plan$/, view: planView },
   { re: /^\/plan\/tag\/([^/]+)$/, view: dayView },
+  { re: /^\/vorlagen$/, view: templatesView },
+  { re: /^\/vorlagen\/([^/]+)$/, view: templateDetailView },
+  { re: /^\/katalog$/, view: catalogView },
+  { re: /^\/katalog\/([^/]+)$/, view: catalogDetailView },
+  { re: /^\/quellen$/, view: sourcesView },
   { re: /^\/training\/([^/]+)$/, view: sessionView },
   { re: /^\/verlauf$/, view: historyView },
   { re: /^\/verlauf\/([^/]+)$/, view: sessionDetailView },
@@ -69,8 +76,8 @@ const STATUS = {
   loading: ['Lädt …', 'neutral'],
   saving: ['Speichert …', 'neutral'],
   synced: ['Gespeichert', 'ok'],
-  local: ['Nur im Browser gespeichert', 'warn'],
   device: ['Auf dem Gerät gespeichert', 'ok'],
+  local: ['Nur im Browser gespeichert', 'warn'],
   error: ['Speichern fehlgeschlagen', 'bad'],
 };
 
@@ -84,12 +91,11 @@ function updateStatus() {
 }
 
 async function start() {
-  document.querySelector('[data-tab="heute"] .tab-ico').innerHTML = icon('today');
-  document.querySelector('[data-tab="plan"] .tab-ico').innerHTML = icon('plan');
-  document.querySelector('[data-tab="verlauf"] .tab-ico').innerHTML = icon('history');
-  document.querySelector('[data-tab="auswertung"] .tab-ico').innerHTML = icon('stats');
+  const tabIcons = { heute: 'today', plan: 'plan', katalog: 'dumbbell', verlauf: 'history', auswertung: 'stats' };
+  for (const [tab, name] of Object.entries(tabIcons)) document.querySelector(`[data-tab="${tab}"] .tab-ico`).innerHTML = icon(name);
   backBtn.innerHTML = icon('back');
   document.querySelector('.settings-link').innerHTML = icon('gear');
+  applyTheme();
   installDelegation();
   setRenderer(render);
   updateStatus();
@@ -99,9 +105,15 @@ async function start() {
   if (!location.hash) location.replace('#/heute');
   render();
   window.addEventListener('hashchange', () => render());
+
   // Offline-Fähigkeit (nur über HTTPS oder localhost möglich)
   if ('serviceWorker' in navigator && window.isSecureContext) {
+    const hadController = Boolean(navigator.serviceWorker.controller);
     navigator.serviceWorker.register('sw.js').catch(() => {});
+    // Neue Version: außerhalb eines laufenden Trainings direkt neu laden.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (hadController && !location.hash.startsWith('#/training/')) location.reload();
+    });
   }
 }
 

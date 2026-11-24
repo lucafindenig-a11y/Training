@@ -3,8 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#fafafd">
   <title>Trainingsplan</title>
   <link rel="icon" href="icons/icon-192.png" type="image/png">
   <link rel="manifest" href="manifest.webmanifest">
@@ -13,6 +12,15 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Training">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <script>
+    // Darstellung vor dem ersten Zeichnen setzen (verhindert kurzes Aufblitzen).
+    (function () {
+      var pref = 'hell';
+      try { pref = localStorage.getItem('trainingsplan.darstellung') || 'hell'; } catch (e) {}
+      var dark = pref === 'dunkel' || (pref === 'system' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+    })();
+  </script>
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -31,6 +39,7 @@
   <nav class="tabbar" aria-label="Hauptnavigation">
     <a href="#/heute" data-tab="heute"><span class="tab-ico"></span><span>Heute</span></a>
     <a href="#/plan" data-tab="plan"><span class="tab-ico"></span><span>Plan</span></a>
+    <a href="#/katalog" data-tab="katalog"><span class="tab-ico"></span><span>Übungen</span></a>
     <a href="#/verlauf" data-tab="verlauf"><span class="tab-ico"></span><span>Verlauf</span></a>
     <a href="#/auswertung/woche" data-tab="auswertung"><span class="tab-ico"></span><span>Auswertung</span></a>
   </nav>

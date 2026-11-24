@@ -3,10 +3,11 @@
 import { store } from '../store.js';
 import { todayISO, toISO, fmtDate, fmtDateLong, monthKey, monthLabel, startOfWeek } from '../dates.js';
 import { esc, fmtNum, plural } from '../format.js';
-import { findSession, activeSession, sortSessions, exerciseKey, sessionTotals, performedSets } from '../model.js';
-import { buildExerciseIndex, analyzeExercise, exerciseFeedback, weekFeedback } from '../analytics.js';
+import { findSession, activeSession, sortSessions, sessionTotals, performedSets, unitOf } from '../model.js';
+import { buildExerciseIndex, analyzeExercise, exerciseFeedback, weekFeedback, indexKey } from '../analytics.js';
+import { catalogFor } from '../catalog.js';
 import { onAction, feedbackList, icon } from '../ui.js';
-import { sessionSummary, emptyState, openStartSheet, weekdayOf, refsTable } from './common.js';
+import { sessionSummary, emptyState, openStartSheet, weekdayOf, refsTable, unitShort, featurePanel, fmtSeconds } from './common.js';
 import { hasUnsavedDraft } from './session.js';
 
 export function historyView() {
@@ -52,14 +53,17 @@ export function sessionDetailView([id], params) {
 
   const exercises = s.exercises.map((ex) => {
     const sets = performedSets(ex);
+    const unit = unitOf(ex);
+    const key = indexKey(ex.name, unit);
+    const cat = catalogFor(ex);
     const setList = ex.sets.map((set) => {
       const ok = !ex.skipped && set.done && Number(set.reps) > 0;
-      const txt = `${set.weight ? `${fmtNum(Number(set.weight))} kg × ` : ''}${set.reps ?? 0}`;
+      const txt = `${set.weight ? `${fmtNum(Number(set.weight))} kg × ` : ''}${set.reps ?? 0}${unit === 'wdh' ? '' : ` ${unitShort(unit)}`}`;
       return `<li class="${ok ? '' : 'set-skipped'}">${esc(txt)}${ok ? '' : '<span class="sr-only"> (ausgelassen)</span>'}</li>`;
     }).join('');
     let analysis = '';
     if (sets.length) {
-      const rec = index.get(exerciseKey(ex.name));
+      const rec = index.get(key);
       const idx = rec ? rec.entries.findIndex((e) => e.sessionId === s.id) : -1;
       if (idx >= 0) {
         const an = analyzeExercise(rec, idx);
@@ -71,7 +75,7 @@ export function sessionDetailView([id], params) {
       <section class="card">
         <div class="detail-ex-head">
           <h3>${esc(ex.name)}</h3>
-          <a class="small" href="#/uebung/${encodeURIComponent(exerciseKey(ex.name))}">Verlauf der Übung</a>
+          <span class="small">${cat ? `<a href="#/katalog/${cat.id}">Anleitung</a> · ` : ''}<a href="#/uebung/${encodeURIComponent(key)}">Verlauf</a></span>
         </div>
         ${ex.skipped || !sets.length ? '<p class="skipped-note">' + icon('skip') + 'Ausgelassen</p>' : ''}
         ${!ex.skipped && ex.sets.length ? `<ol class="set-list">${setList}</ol>` : ''}
@@ -90,17 +94,17 @@ export function sessionDetailView([id], params) {
       <section class="card">
         <span class="eyebrow">${esc(fmtDateLong(s.date))}</span>
         <h2>${esc(s.title)}</h2>
-        <div class="kpis small-kpis">
-          <div><span>Übungen</span><strong>${t.performed}/${t.exercises}</strong></div>
-          <div><span>Sätze</span><strong>${t.sets}</strong></div>
-          <div><span>Wiederholungen</span><strong>${fmtNum(t.reps)}</strong></div>
-          <div><span>Volumen</span><strong>${t.volume ? `${fmtNum(t.volume, 0)} kg` : '–'}</strong></div>
-        </div>
+        ${featurePanel([
+          ['dumbbell', `${t.performed}/${t.exercises}`, 'Übungen'],
+          ['layers', String(t.sets), 'Sätze'],
+          ['bolt', fmtNum(t.reps), 'Wdh.'],
+          t.seconds && !t.volume ? ['clock', fmtSeconds(t.seconds), 'Dauer'] : ['target', t.volume ? `${fmtNum(t.volume, 0)} kg` : '–', 'Volumen'],
+        ])}
         ${t.setsSkipped || t.skipped ? `<p class="small muted">Ausgelassen: ${t.skipped ? plural(t.skipped, 'Übung', 'Übungen') : ''}${t.skipped && t.setsSkipped ? ', ' : ''}${t.setsSkipped ? plural(t.setsSkipped, 'Satz', 'Sätze') : ''}</p>` : ''}
         ${s.notes ? `<p class="note-inline">${esc(s.notes)}</p>` : ''}
         ${week ? feedbackList([week]) : ''}
         <div class="btn-row">
-          <a class="btn" href="#/training/${id}">${icon('edit')}Korrigieren</a>
+          <a class="btn ghost" href="#/training/${id}">${icon('edit')}Korrigieren</a>
         </div>
         <p class="small muted">${s.revision ? `Zuletzt korrigiert am ${fmtDate(toISO(new Date(s.updatedAt)))} (${plural(s.revision, 'Korrektur', 'Korrekturen')}).` : ''}</p>
       </section>

@@ -1,14 +1,18 @@
-// Plan-Editor: Plan, Trainingstage und Übungen anlegen, bearbeiten, löschen und sortieren.
+// Plan-Editor: Plan, Trainingstage (mit Wochentagen & Schwerpunkt) und Übungen – alles frei bearbeitbar.
 
 import { store } from '../store.js';
 import { todayISO, WEEKDAYS_SHORT, WEEKDAYS_LONG } from '../dates.js';
 import { esc, plural } from '../format.js';
-import {
-  addDay, findDay, removeDay, duplicateDay, moveItem, addPlanExercise, validateExerciseFields,
-  recordSchedule, deletePlan, knownExerciseNames, normWeekdays, fmtRepsTarget,
-} from '../model.js';
+import { addDay, findDay, removeDay, duplicateDay, moveItem, recordSchedule, deletePlan, normWeekdays, normFocus } from '../model.js';
+import { EXERCISES, FOCUS, catalogFor, suggestForFocus, inferFocus, getExercise } from '../catalog.js';
+import { DAY_TEMPLATES, getDayTemplate, buildDay } from '../templates.js';
 import { onAction, openSheet, commit, navigate, confirmDialog, field, showFieldErrors, toast, icon } from '../ui.js';
-import { targetText, weekdaysText, openCreatePlanSheet, emptyState, openStartSheet, fmtRest } from './common.js';
+import {
+  targetText, weekdaysText, openCreatePlanSheet, openStartSheet, dayFocus, focusBadges, focusLabel, musclesText,
+  featurePanel, openExerciseInfo,
+} from './common.js';
+import { openPlanExerciseForm } from './exercise-form.js';
+import { openCatalogPicker } from './catalog.js';
 
 // Jede Planänderung aktualisiert die Wochenplan-Historie (gilt ab heute) und speichert.
 function commitPlan() {
@@ -25,9 +29,16 @@ export function planView() {
   if (!plan) {
     return {
       title: 'Plan', tab: 'plan',
-      html: emptyState('Noch kein Trainingsplan',
-        'Stelle deinen Plan selbst zusammen: Trainingstage, Wochentage, Übungen, Sätze und Wiederholungen bestimmst du.',
-        `<button class="btn primary" data-action="create-plan">${icon('plus')}Plan erstellen</button>`) + HISTORY_NOTE,
+      html: `
+        <section class="hero plain">
+          <div class="hero-top"><span class="hero-tag">${icon('plan')}Dein Trainingsplan</span></div>
+          <div class="hero-info"><div><h3>Noch kein Plan angelegt</h3><p class="meta">${icon('sparkle')}Vorlage wählen oder komplett selbst bauen</p></div></div>
+        </section>
+        <div class="quick-grid">
+          <a class="quick" href="#/vorlagen"><span class="q-ico">${icon('layers')}</span><strong>Mit Vorlage starten</strong><span>Push/Pull/Beine, Ganzkörper, Ober-/Unterkörper, Cardio, Mobility</span></a>
+          <button class="quick" data-action="create-plan" style="text-align:left;cursor:pointer"><span class="q-ico">${icon('edit')}</span><strong>Eigenen Plan erstellen</strong><span>Tage, Übungen, Sätze und Wiederholungen selbst festlegen</span></button>
+        </div>
+        ${HISTORY_NOTE}`,
     };
   }
   const week = WEEKDAYS_SHORT.map((wd, i) => {
@@ -40,22 +51,22 @@ export function planView() {
     <li class="card day-card">
       <a class="day-main" href="#/plan/tag/${d.id}">
         <strong>${esc(d.name)}</strong>
-        <span class="muted">${esc(weekdaysText(d.weekdays))} · ${plural(d.exercises.length, 'Übung', 'Übungen')}</span>
-        ${d.exercises.length ? `<span class="small muted ellipsis">${esc(d.exercises.map((e) => e.name).join(', '))}</span>` : ''}
+        <span class="small muted">${esc(weekdaysText(d.weekdays))} · ${plural(d.exercises.length, 'Übung', 'Übungen')}</span>
+        ${dayFocus(d).length ? `<span class="badge-row">${focusBadges(dayFocus(d))}</span>` : ''}
       </a>
       <div class="row-actions">
-        <button class="icon-btn" data-action="day-move" data-id="${d.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="${esc(d.name)} nach oben">${icon('up')}</button>
-        <button class="icon-btn" data-action="day-move" data-id="${d.id}" data-dir="1" ${i === plan.days.length - 1 ? 'disabled' : ''} aria-label="${esc(d.name)} nach unten">${icon('down')}</button>
-        <button class="icon-btn" data-action="day-edit" data-id="${d.id}" aria-label="${esc(d.name)} umbenennen / Wochentage">${icon('edit')}</button>
-        <button class="icon-btn" data-action="day-duplicate" data-id="${d.id}" aria-label="${esc(d.name)} duplizieren">${icon('copy')}</button>
-        <button class="icon-btn danger" data-action="day-delete" data-id="${d.id}" aria-label="${esc(d.name)} löschen">${icon('trash')}</button>
+        <button class="icon-btn plain small" data-action="day-move" data-id="${d.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="${esc(d.name)} nach oben">${icon('up')}</button>
+        <button class="icon-btn plain small" data-action="day-move" data-id="${d.id}" data-dir="1" ${i === plan.days.length - 1 ? 'disabled' : ''} aria-label="${esc(d.name)} nach unten">${icon('down')}</button>
+        <button class="icon-btn plain small" data-action="day-edit" data-id="${d.id}" aria-label="${esc(d.name)} bearbeiten">${icon('edit')}</button>
+        <button class="icon-btn plain small" data-action="day-duplicate" data-id="${d.id}" aria-label="${esc(d.name)} duplizieren">${icon('copy')}</button>
+        <button class="icon-btn plain small danger" data-action="day-delete" data-id="${d.id}" aria-label="${esc(d.name)} löschen">${icon('trash')}</button>
       </div>
     </li>`).join('');
 
   return {
     title: 'Plan', tab: 'plan',
     html: `
-      <section class="card plan-head">
+      <section class="card">
         <div class="plan-title">
           <div><span class="eyebrow">Mein Trainingsplan</span><h2>${esc(plan.name)}</h2></div>
           <div class="row-actions">
@@ -66,27 +77,50 @@ export function planView() {
         <div class="wk-strip" aria-label="Wochenübersicht">${week}</div>
         <p class="small muted">${perWeek ? `${plural(perWeek, 'Einheit', 'Einheiten')} pro Woche geplant.` : 'Noch keine Wochentage festgelegt – lege bei den Trainingstagen fest, wann du trainierst.'}</p>
       </section>
-
+      <div class="quick-grid">
+        <a class="quick" href="#/vorlagen"><span class="q-ico">${icon('layers')}</span><strong>Vorlagen</strong><span>Plan oder einzelne Tage übernehmen</span></a>
+        <a class="quick" href="#/katalog"><span class="q-ico">${icon('dumbbell')}</span><strong>Übungskatalog</strong><span>${EXERCISES.length} Übungen mit Anleitung</span></a>
+      </div>
       <div class="section-head"><h2>Trainingstage</h2>
         <button class="btn primary small" data-action="day-add">${icon('plus')}Trainingstag</button></div>
-      ${plan.days.length ? `<ul class="list">${dayCards}</ul>` : '<p class="muted">Noch keine Trainingstage. Lege deinen ersten Trainingstag an, z. B. „Oberkörper“ oder „Tag A“.</p>'}
+      ${plan.days.length ? `<ul class="list">${dayCards}</ul>` : '<p class="muted">Noch keine Trainingstage. Lege einen leeren Tag an oder übernimm einen Tag aus einer Vorlage, z. B. „Push“.</p>'}
       ${HISTORY_NOTE}`,
   };
 }
 
 function weekdayPicker(selected) {
-  return `<fieldset class="weekday-picker"><legend class="field-label">Wochentage</legend>
+  return `<fieldset><legend class="field-label">Wochentage</legend>
     <div class="wd-row">${WEEKDAYS_SHORT.map((wd, i) => `
-      <label class="wd"><input type="checkbox" name="weekdays" value="${i}" aria-label="${WEEKDAYS_LONG[i]}" ${selected.includes(i) ? 'checked' : ''}><span aria-hidden="true">${wd}</span></label>`).join('')}
+      <label class="toggle-chip"><input type="checkbox" name="weekdays" value="${i}" aria-label="${WEEKDAYS_LONG[i]}" ${selected.includes(i) ? 'checked' : ''}><span aria-hidden="true">${wd}</span></label>`).join('')}
     </div><span class="field-hint">Optional – an diesen Tagen ist der Trainingstag geplant.</span></fieldset>`;
 }
 
+function focusPicker(selected) {
+  return `<fieldset><legend class="field-label">Schwerpunkt</legend>
+    <div class="focus-row">${Object.entries(FOCUS).map(([k, f]) => `
+      <label class="toggle-chip"><input type="checkbox" name="focus" value="${k}" ${selected.includes(k) ? 'checked' : ''}><span>${esc(f.label)}</span></label>`).join('')}
+    </div><span class="field-hint">Bestimmt, welche Übungen dir vorgeschlagen werden (z. B. bei Push nur Brust, Schultern und Trizeps).</span></fieldset>`;
+}
+
 function openDaySheet(day = null) {
+  const initialFocus = day ? dayFocus(day) : [];
   openSheet({
     title: day ? 'Trainingstag bearbeiten' : 'Neuer Trainingstag',
     submitLabel: day ? 'Speichern' : 'Anlegen',
-    body: `${field({ label: 'Name', name: 'name', value: day?.name ?? '', placeholder: 'z. B. Oberkörper, Push, Tag A', attrs: 'maxlength="50" autocomplete="off"' })}
-      ${weekdayPicker(day?.weekdays ?? [])}`,
+    body: `${field({ label: 'Name', name: 'name', value: day?.name ?? '', placeholder: 'z. B. Push, Oberkörper, Tag A', attrs: 'maxlength="50" autocomplete="off"' })}
+      ${weekdayPicker(day?.weekdays ?? [])}
+      ${focusPicker(initialFocus)}`,
+    onMount: (form) => {
+      if (day) return;
+      // Neuer Tag: Schwerpunkt aus dem Namen vorschlagen, solange er nicht selbst gewählt wurde.
+      let touched = false;
+      form.querySelectorAll('input[name=focus]').forEach((c) => c.addEventListener('change', () => { touched = true; }));
+      form.elements.name.addEventListener('input', () => {
+        if (touched) return;
+        const f = inferFocus(form.elements.name.value);
+        form.querySelectorAll('input[name=focus]').forEach((c) => { c.checked = f.includes(c.value); });
+      });
+    },
     onSubmit: (form) => {
       const name = form.elements.name.value.trim();
       if (!name) {
@@ -94,12 +128,14 @@ function openDaySheet(day = null) {
         return false;
       }
       const weekdays = normWeekdays([...form.querySelectorAll('input[name=weekdays]:checked')].map((c) => c.value));
+      const focus = normFocus([...form.querySelectorAll('input[name=focus]:checked')].map((c) => c.value));
       if (day) {
         day.name = name;
         day.weekdays = weekdays;
+        day.focus = focus;
         commitPlan();
       } else {
-        const created = addDay(store.data.plan, { name, weekdays });
+        const created = addDay(store.data.plan, { name, weekdays, focus });
         commitPlan();
         navigate(`#/plan/tag/${created.id}`);
       }
@@ -127,14 +163,40 @@ onAction('plan-rename', () => {
 });
 
 onAction('plan-delete', async () => {
-  const ok = await confirmDialog('Der gesamte Plan mit allen Trainingstagen und Übungen wird gelöscht. <strong>Deine erfassten Trainings und Auswertungen bleiben vollständig erhalten.</strong> Danach kannst du einen neuen Plan anlegen.', { title: 'Plan löschen?', confirmLabel: 'Plan löschen' });
+  const ok = await confirmDialog('Der gesamte Plan mit allen Trainingstagen und Übungen wird gelöscht. <strong>Deine erfassten Trainings und Auswertungen bleiben vollständig erhalten.</strong> Danach kannst du einen neuen Plan anlegen oder eine Vorlage wählen.', { title: 'Plan löschen?', confirmLabel: 'Plan löschen' });
   if (!ok) return;
   deletePlan(store.data, todayISO());
   commit();
   toast('Plan gelöscht – deine Trainingshistorie ist erhalten.');
 });
 
-onAction('day-add', () => openDaySheet());
+// Neuer Tag: leer oder aus einer Tagesvorlage
+onAction('day-add', () => {
+  openSheet({
+    title: 'Trainingstag hinzufügen',
+    submitLabel: 'Weiter',
+    focus: false,
+    body: `<fieldset class="choices"><legend class="sr-only">Art des Trainingstags</legend>
+      <label class="choice"><input type="radio" name="tpl" value="" checked>
+        <span><strong>Leerer Trainingstag</strong><small>Name, Wochentage, Schwerpunkt und Übungen selbst festlegen</small></span></label>
+      ${DAY_TEMPLATES.map((t) => `<label class="choice"><input type="radio" name="tpl" value="${t.id}">
+        <span><strong>${esc(t.name)}</strong><small>Vorlage · ${esc(focusLabel(t.focus))} · ${plural(t.exercises.length, 'Übung', 'Übungen')}: ${esc(t.exercises.map(([id]) => getExercise(id).name).join(', '))}</small></span></label>`).join('')}
+    </fieldset>`,
+    onSubmit: (form) => {
+      const tpl = getDayTemplate(form.querySelector('input[name=tpl]:checked')?.value);
+      if (!tpl) {
+        setTimeout(() => openDaySheet(), 0);
+        return;
+      }
+      const d = buildDay(tpl, { keepWeekdays: false });
+      store.data.plan.days.push(d);
+      commitPlan();
+      navigate(`#/plan/tag/${d.id}`);
+      toast(`„${d.name}“ angelegt – lege noch die Wochentage fest.`);
+    },
+  });
+});
+
 onAction('day-edit', (el) => openDaySheet(findDay(store.data.plan, el.dataset.id)));
 
 onAction('day-move', (el) => {
@@ -160,28 +222,51 @@ onAction('day-delete', async (el) => {
   if (location.hash.startsWith('#/plan/tag/')) navigate('#/plan');
 });
 
-// ---------- Trainingstag mit Übungen ----------
+// ---------- Trainingstag mit Übungen und Vorschlägen ----------
 
 export function dayView([id]) {
   const day = findDay(store.data.plan, id);
   if (!day) return { redirect: '#/plan' };
-  const list = day.exercises.map((ex, i) => `
+  const focus = dayFocus(day);
+  const inferred = !day.focus?.length && focus.length > 0;
+  const sets = day.exercises.reduce((a, e) => a + Number(e.sets || 0), 0);
+
+  const list = day.exercises.map((ex, i) => {
+    const cat = catalogFor(ex);
+    return `
     <li class="card ex-card">
       <div class="ex-main">
         <span class="ex-num">${i + 1}</span>
         <div>
           <strong>${esc(ex.name)}</strong>
-          <span class="muted">${esc(targetText(ex))}</span>
+          <span class="small muted">${esc(targetText(ex))}</span>
           ${ex.notes ? `<span class="small note-inline">${esc(ex.notes)}</span>` : ''}
+          ${cat ? `<button class="info-link" style="background:none;border:none;padding:0;cursor:pointer" data-action="ex-info" data-day="${day.id}" data-id="${ex.id}">${icon('info')}Anleitung · ${esc(musclesText(cat))}</button>` : ''}
         </div>
       </div>
       <div class="row-actions">
-        <button class="icon-btn" data-action="ex-move" data-day="${day.id}" data-id="${ex.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="${esc(ex.name)} nach oben">${icon('up')}</button>
-        <button class="icon-btn" data-action="ex-move" data-day="${day.id}" data-id="${ex.id}" data-dir="1" ${i === day.exercises.length - 1 ? 'disabled' : ''} aria-label="${esc(ex.name)} nach unten">${icon('down')}</button>
-        <button class="icon-btn" data-action="ex-edit" data-day="${day.id}" data-id="${ex.id}" aria-label="${esc(ex.name)} bearbeiten">${icon('edit')}</button>
-        <button class="icon-btn danger" data-action="ex-delete" data-day="${day.id}" data-id="${ex.id}" aria-label="${esc(ex.name)} löschen">${icon('trash')}</button>
+        <button class="icon-btn plain small" data-action="ex-move" data-day="${day.id}" data-id="${ex.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="${esc(ex.name)} nach oben">${icon('up')}</button>
+        <button class="icon-btn plain small" data-action="ex-move" data-day="${day.id}" data-id="${ex.id}" data-dir="1" ${i === day.exercises.length - 1 ? 'disabled' : ''} aria-label="${esc(ex.name)} nach unten">${icon('down')}</button>
+        <button class="icon-btn plain small" data-action="ex-edit" data-day="${day.id}" data-id="${ex.id}" aria-label="${esc(ex.name)} bearbeiten">${icon('edit')}</button>
+        <button class="icon-btn plain small danger" data-action="ex-delete" data-day="${day.id}" data-id="${ex.id}" aria-label="${esc(ex.name)} löschen">${icon('trash')}</button>
       </div>
-    </li>`).join('');
+    </li>`;
+  }).join('');
+
+  const suggestions = suggestForFocus(focus, { excludeNames: day.exercises.map((e) => e.name) }).slice(0, 10);
+  const suggestBlock = focus.length
+    ? `<div class="section-head"><h2>Vorschläge für ${esc(focusLabel(focus))}</h2>
+        <button class="btn small ghost" data-action="ex-add" data-day="${day.id}">Ganzer Katalog</button></div>
+      ${inferred ? `<p class="small muted">Schwerpunkt aus dem Namen erkannt – ändern über ${icon('edit')} Bearbeiten.</p>` : ''}
+      ${suggestions.length ? `<div class="suggest-row">${suggestions.map((e) => `
+        <div class="suggest">
+          <div><strong>${esc(e.name)}</strong><span class="block">${esc(musclesText(e))}</span></div>
+          <div class="row">
+            <button class="chip small" data-action="sug-info" data-id="${e.id}">${icon('info')}Info</button>
+            <button class="icon-btn dark small" data-action="sug-add" data-day="${day.id}" data-id="${e.id}" aria-label="${esc(e.name)} hinzufügen">${icon('plus')}</button>
+          </div>
+        </div>`).join('')}</div>` : '<p class="muted small">Alle passenden Katalogübungen sind schon in diesem Tag.</p>'}`
+    : `<section class="card"><h3>Passende Vorschläge</h3><p class="small muted">Lege über ${icon('edit')} einen Schwerpunkt fest (z. B. Push), dann siehst du hier passende Übungen. Den ganzen Katalog erreichst du jederzeit über „Übung“.</p></section>`;
 
   return {
     title: day.name, tab: 'plan', back: '#/plan',
@@ -189,51 +274,25 @@ export function dayView([id]) {
       <section class="card">
         <div class="plan-title">
           <div><span class="eyebrow">Trainingstag</span><h2>${esc(day.name)}</h2>
-            <p class="muted">${esc(weekdaysText(day.weekdays))}</p></div>
+            <p class="small muted">${esc(weekdaysText(day.weekdays))}</p>
+            ${focus.length ? `<div class="badge-row">${focusBadges(focus)}</div>` : ''}</div>
           <div class="row-actions">
-            <button class="icon-btn" data-action="day-edit" data-id="${day.id}" aria-label="Name und Wochentage bearbeiten">${icon('edit')}</button>
+            <button class="icon-btn" data-action="day-edit" data-id="${day.id}" aria-label="Name, Wochentage und Schwerpunkt bearbeiten">${icon('edit')}</button>
             <button class="icon-btn danger" data-action="day-delete" data-id="${day.id}" aria-label="Trainingstag löschen">${icon('trash')}</button>
           </div>
         </div>
-        ${day.exercises.length ? `<button class="btn" data-action="start-day" data-id="${day.id}">${icon('play')}Training mit diesem Tag starten</button>` : ''}
+        ${day.exercises.length ? featurePanel([['dumbbell', String(day.exercises.length), 'Übungen'], ['layers', String(sets), 'Sätze'], ['target', focus.length ? focusLabel(focus) : '–', 'Schwerpunkt']]) : ''}
       </section>
       <div class="section-head"><h2>Übungen</h2>
         <button class="btn primary small" data-action="ex-add" data-day="${day.id}">${icon('plus')}Übung</button></div>
-      ${day.exercises.length ? `<ol class="list">${list}</ol>` : '<p class="muted">Noch keine Übungen. Füge die erste Übung hinzu – Sätze, Wiederholungen und optional Gewicht, Pause und Notizen legst du selbst fest.</p>'}
-      ${HISTORY_NOTE}`,
+      ${day.exercises.length ? `<ol class="list">${list}</ol>` : '<p class="muted">Noch keine Übungen. Wähle unten einen Vorschlag, öffne den Katalog oder lege eine eigene Übung an.</p>'}
+      ${suggestBlock}
+      ${HISTORY_NOTE}
+      ${day.exercises.length ? `<div class="action-bar">
+        <div class="ab-info"><strong>${plural(day.exercises.length, 'Übung', 'Übungen')} · ${plural(sets, 'Satz', 'Sätze')}</strong><span>${esc(weekdaysText(day.weekdays))}</span></div>
+        <button class="btn primary" data-action="start-day" data-id="${day.id}">${icon('play')}Starten</button>
+      </div>` : ''}`,
   };
-}
-
-function openExerciseSheet(day, ex = null) {
-  const names = knownExerciseNames(store.data);
-  openSheet({
-    title: ex ? 'Übung bearbeiten' : 'Übung hinzufügen',
-    submitLabel: ex ? 'Speichern' : 'Hinzufügen',
-    body: `
-      ${field({ label: 'Übung', name: 'name', value: ex?.name ?? '', placeholder: 'z. B. Bankdrücken', attrs: 'list="exercise-names" maxlength="80" autocomplete="off"' })}
-      <datalist id="exercise-names">${names.map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
-      <div class="field-row">
-        ${field({ label: 'Sätze', name: 'sets', value: ex?.sets ?? 3, attrs: 'inputmode="numeric" maxlength="2"' })}
-        ${field({ label: 'Wiederholungen', name: 'reps', value: ex ? fmtRepsTarget(ex.reps).replace('–', '-') : '10', placeholder: '10 oder 8-12', attrs: 'inputmode="numeric" maxlength="9"' })}
-      </div>
-      <div class="field-row">
-        ${field({ label: 'Gewicht (kg, optional)', name: 'weight', value: ex?.weight != null ? String(ex.weight).replace('.', ',') : '', placeholder: 'z. B. 62,5', attrs: 'inputmode="decimal" maxlength="7"' })}
-        ${field({ label: 'Pause (optional)', name: 'rest', value: ex?.rest ? (ex.rest >= 60 ? fmtRest(ex.rest).replace(' min', '') : String(ex.rest)) : '', placeholder: '90 oder 1:30', attrs: 'inputmode="numeric" maxlength="5"', hint: 'Sekunden oder Min:Sek' })}
-      </div>
-      ${field({ label: 'Notizen (optional)', name: 'notes', type: 'textarea', value: ex?.notes ?? '', placeholder: 'z. B. Sitzhöhe 4, enger Griff' })}
-      ${ex ? '<p class="small muted">Der Name dient auch zum Vergleich mit früheren Trainings dieser Übung.</p>' : ''}`,
-    onSubmit: (form) => {
-      const f = Object.fromEntries(new FormData(form));
-      const { ok, errors, value } = validateExerciseFields(f);
-      if (!ok) {
-        showFieldErrors(form, errors);
-        return false;
-      }
-      if (ex) Object.assign(ex, value);
-      else addPlanExercise(day, value);
-      commitPlan();
-    },
-  });
 }
 
 function getEx(el) {
@@ -242,10 +301,33 @@ function getEx(el) {
   return { day, idx, ex: idx >= 0 ? day.exercises[idx] : null };
 }
 
-onAction('ex-add', (el) => openExerciseSheet(findDay(store.data.plan, el.dataset.day)));
+onAction('ex-add', (el) => {
+  const day = findDay(store.data.plan, el.dataset.day);
+  if (!day) return;
+  openCatalogPicker({
+    title: `Übung für „${day.name}“`,
+    focus: dayFocus(day),
+    onPick: (entry) => openPlanExerciseForm({ day, entry }),
+    onCustom: () => openPlanExerciseForm({ day }),
+  });
+});
+onAction('sug-add', (el) => {
+  const day = findDay(store.data.plan, el.dataset.day);
+  const entry = getExercise(el.dataset.id);
+  if (day && entry) openPlanExerciseForm({ day, entry });
+});
+onAction('sug-info', (el) => {
+  const entry = getExercise(el.dataset.id);
+  if (entry) openExerciseInfo(entry);
+});
+onAction('ex-info', (el) => {
+  const { ex } = getEx(el);
+  const entry = catalogFor(ex);
+  if (entry) openExerciseInfo(entry);
+});
 onAction('ex-edit', (el) => {
   const { day, ex } = getEx(el);
-  if (ex) openExerciseSheet(day, ex);
+  if (ex) openPlanExerciseForm({ day, ex });
 });
 onAction('ex-move', (el) => {
   const { day, idx } = getEx(el);

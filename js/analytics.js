@@ -5,8 +5,9 @@ import {
   addDays, daysBetween, startOfWeek, monthKey, monthStart, monthEnd, addMonths, fmtDate,
   relativeLabel, durationLabel, weekdayIndex, WEEKDAYS_SHORT, isoWeek, monthLabel,
 } from './dates.js';
-import { completedSessions, exerciseKey, performedSets, plannedInRange, sessionTotals } from './model.js';
+import { completedSessions, exerciseKey, performedSets, plannedInRange, sessionTotals, unitOf, UNITS } from './model.js';
 import { fmtNum, fmtDelta } from './format.js';
+import { catalogFor, MUSCLES } from './catalog.js';
 
 const EPS = 1e-9;
 const round2 = (n) => Math.round(n * 100) / 100;
@@ -47,18 +48,34 @@ export function entryMetrics(sets) {
   };
 }
 
-// Index aller Übungen: key -> { key, name, entries: [chronologisch] }
+// Schlüssel einer Übungshistorie: Name, bei Zeitübungen zusätzlich die Einheit
+// (30 s Plank werden nie mit 30 Wiederholungen verglichen).
+export function indexKey(name, unit = 'wdh') {
+  const k = exerciseKey(name);
+  return unit === 'wdh' ? k : `${k}|${unit}`;
+}
+
+// Index aller Übungen: key -> { key, name, unit, entries: [chronologisch] }
 export function buildExerciseIndex(data) {
   const map = new Map();
   for (const s of completedSessions(data)) {
     for (const ex of s.exercises) {
       const sets = performedSets(ex);
       if (!sets.length) continue;
-      const key = exerciseKey(ex.name);
-      if (!map.has(key)) map.set(key, { key, name: ex.name, entries: [] });
+      const unit = unitOf(ex);
+      const key = indexKey(ex.name, unit);
+      if (!map.has(key)) map.set(key, { key, name: ex.name, unit, catalogId: null, entries: [] });
       const rec = map.get(key);
       rec.name = ex.name;
-      rec.entries.push({ sessionId: s.id, date: s.date, sets, ...entryMetrics(sets) });
+      if (ex.catalogId) rec.catalogId = ex.catalogId;
+      const m = entryMetrics(sets);
+      // Bei Zeitübungen ist die Dauer das Maß – ein Zusatzgewicht wird angezeigt, aber nicht verglichen.
+      if (unit !== 'wdh') {
+        m.weighted = false;
+        m.e1rm = null;
+        m.volume = 0;
+      }
+      rec.entries.push({ sessionId: s.id, date: s.date, sets, unit, ...m });
     }
   }
   return map;
@@ -81,7 +98,7 @@ function verdictOf(a, b) {
 // diesem Gewicht); ist der beste Satz identisch, entscheidet das Gesamtvolumen.
 // Ohne Gewicht: meiste Wiederholungen in einem Satz, dann Wiederholungen gesamt.
 export function compareEntries(cur, ref, weighted = cur.weighted || ref.weighted) {
-  const base = { weighted, dVolume: round2(cur.volume - ref.volume), dTotalReps: cur.totalReps - ref.totalReps };
+  const base = { weighted, unit: cur.unit ?? 'wdh', dVolume: round2(cur.volume - ref.volume), dTotalReps: cur.totalReps - ref.totalReps };
   if (weighted) {
     const dWeight = round2(cur.topWeight - ref.topWeight);
     const dReps = cur.repsAtTop - ref.repsAtTop;
@@ -107,29 +124,36 @@ export function bestEntry(entries, weighted = isWeighted(entries)) {
 
 // ---------- Textbausteine ----------
 
+const short = (unit) => UNITS[unit]?.short ?? 'Wdh.';
+
 export function describeTop(e, weighted) {
-  return weighted ? `${fmtNum(e.topWeight)} kg × ${e.repsAtTop}` : `${e.maxReps} Wdh.`;
+  const unit = e.unit ?? 'wdh';
+  if (weighted) return `${fmtNum(e.topWeight)} kg × ${e.repsAtTop}`;
+  return `${e.maxReps} ${short(unit)}`;
 }
 
-// Kompakte Satzliste, z. B. "60 kg × 10/10/8" oder "60×10 · 65×8" oder "12/10/9 Wdh."
+// Kompakte Satzliste, z. B. "60 kg × 10/10/8", "60 kg × 10 · 65 kg × 8", "12/10/9 Wdh." oder "45/40 s".
 export function describeSets(e) {
+  const unit = e.unit ?? 'wdh';
+  const suffix = unit === 'wdh' ? '' : ` ${short(unit)}`;
   const weights = [...new Set(e.sets.map((s) => s.weight))];
   if (weights.length === 1) {
     const reps = e.sets.map((s) => s.reps).join('/');
-    return weights[0] > 0 ? `${fmtNum(weights[0])} kg × ${reps}` : `${reps} Wdh.`;
+    return weights[0] > 0 ? `${fmtNum(weights[0])} kg × ${reps}${suffix}` : `${reps} ${short(unit)}`;
   }
-  return e.sets.map((s) => (s.weight > 0 ? `${fmtNum(s.weight)} kg × ${s.reps}` : `${s.reps} Wdh.`)).join(' · ');
+  return e.sets.map((s) => (s.weight > 0 ? `${fmtNum(s.weight)} kg × ${s.reps}${suffix}` : `${s.reps} ${short(unit)}`)).join(' · ');
 }
 
 export function describeDiff(cmp) {
   const parts = [];
+  const u = short(cmp.unit);
   if (cmp.weighted) {
     if (cmp.dWeight !== 0) parts.push(fmtDelta(cmp.dWeight, ' kg', 2));
     if (cmp.dReps !== 0) parts.push(`${fmtDelta(cmp.dReps)} Wdh. im schwersten Satz`);
     if (!parts.length && Math.abs(cmp.dVolume) > EPS) parts.push(`Volumen ${fmtDelta(cmp.dVolume, ' kg', 0)}`);
   } else {
-    if (cmp.dMaxReps !== 0) parts.push(`${fmtDelta(cmp.dMaxReps)} Wdh. im besten Satz`);
-    if (cmp.dTotalReps !== 0) parts.push(`${fmtDelta(cmp.dTotalReps)} Wdh. gesamt`);
+    if (cmp.dMaxReps !== 0) parts.push(`${fmtDelta(cmp.dMaxReps)} ${u} im besten Satz`);
+    if (cmp.dTotalReps !== 0) parts.push(`${fmtDelta(cmp.dTotalReps)} ${u} gesamt`);
   }
   return parts.length ? parts.join(', ') : 'keine Veränderung';
 }
@@ -141,7 +165,8 @@ export const VERDICT_LABEL = { besser: 'besser', schlechter: 'schwächer', gleic
 export function exerciseTrend(entries, weighted = isWeighted(entries)) {
   const pts = weighted ? entries.filter((e) => e.weighted) : entries;
   const n = pts.length;
-  const metricLabel = weighted ? 'geschätzte Maximalkraft (1RM)' : 'Wiederholungen im besten Satz';
+  const unit = entries[0]?.unit ?? 'wdh';
+  const metricLabel = weighted ? 'geschätzte Maximalkraft (1RM)' : unit === 'wdh' ? 'Wiederholungen im besten Satz' : 'Dauer des längsten Satzes';
   if (n < 3) {
     return { status: 'insufficient', n, metricLabel, reason: `Erst ${n === 1 ? 'eine Einheit' : `${n} Einheiten`} erfasst – für eine Trendaussage sind mindestens 3 nötig.` };
   }
@@ -156,8 +181,9 @@ export function exerciseTrend(entries, weighted = isWeighted(entries)) {
   const pct = startValue > 0 ? ((endValue - startValue) / startValue) * 100 : 0;
   const dir = pct > 2.5 ? 'steigend' : pct < -2.5 ? 'fallend' : 'stabil';
   return {
-    status: 'ok', dir, pct, n, k, span, metricLabel, unit: weighted ? ' kg' : ' Wdh.',
+    status: 'ok', dir, pct, n, k, span, metricLabel, unit: weighted ? ' kg' : ` ${short(unit)}`,
     startValue: round2(startValue), endValue: round2(endValue), from: pts[0].date, to: pts[n - 1].date,
+    first: pts[0], last: pts[n - 1],
   };
 }
 
@@ -278,15 +304,21 @@ export function olderBetterMessages(an, today) {
   }));
 }
 
+// Langfristige Entwicklung in Alltagssprache – immer mit den konkreten Werten und Daten.
 export function trendMessage(an) {
   const t = an.trend;
   if (t.status !== 'ok') return { tone: 'info', key: an.key, text: `${an.name}: ${t.reason}` };
-  const startLbl = t.k > 1 ? `Ø der ersten ${t.k} Einheiten` : 'erste Einheit';
-  const endLbl = t.k > 1 ? `Ø der letzten ${t.k} Einheiten` : 'letzte Einheit';
   const tone = t.dir === 'steigend' ? 'pos' : t.dir === 'fallend' ? 'neg' : 'neutral';
+  const phrase = t.dir === 'steigend' ? 'zeigt sich ein Aufwärtstrend'
+    : t.dir === 'fallend' ? 'zeigt sich ein Abwärtstrend'
+      : 'ist deine Leistung etwa gleich geblieben (Veränderung unter 2,5 %)';
+  const basis = t.k > 1 ? `Schnitt der ersten und der letzten ${t.k} Einheiten` : 'erste und letzte Einheit';
+  const values = an.weighted
+    ? `Die geschätzte Maximalkraft (${basis}) ging von ${fmtNum(t.startValue, 1)} auf ${fmtNum(t.endValue, 1)} kg (${fmtDelta(t.pct, ' %')}).`
+    : `${t.metricLabel} (${basis}): ${fmtNum(t.startValue, 1)} → ${fmtNum(t.endValue, 1)}${t.unit} (${fmtDelta(t.pct, ' %')}).`;
   return {
     tone, key: an.key,
-    text: `${an.name}: Langfristig ${t.dir} über ${durationLabel(t.span)} (${t.n} Einheiten) – ${t.metricLabel}: ${startLbl} ${fmtNum(t.startValue, 1)}${t.unit}, ${endLbl} ${fmtNum(t.endValue, 1)}${t.unit} (${fmtDelta(t.pct, ' %')}).`,
+    text: `${an.name}: Über ${durationLabel(t.span)} und ${t.n} Einheiten ${phrase}. Bester Satz am ${fmtDate(t.from)}: ${describeTop(t.first, an.weighted)}, zuletzt am ${fmtDate(t.to)}: ${describeTop(t.last, an.weighted)}. ${values}`,
   };
 }
 
@@ -294,7 +326,7 @@ export function trendMessage(an) {
 
 export function periodStats(data, start, end, today) {
   const sessions = completedSessions(data).filter((s) => s.date >= start && s.date <= end);
-  const st = { start, end, sessions, count: sessions.length, sets: 0, setsSkipped: 0, exercisesSkipped: 0, reps: 0, volume: 0 };
+  const st = { start, end, sessions, count: sessions.length, sets: 0, setsSkipped: 0, exercisesSkipped: 0, reps: 0, volume: 0, seconds: 0 };
   const keys = new Set();
   for (const s of sessions) {
     const t = sessionTotals(s);
@@ -303,7 +335,8 @@ export function periodStats(data, start, end, today) {
     st.exercisesSkipped += t.skipped;
     st.reps += t.reps;
     st.volume += t.volume;
-    for (const ex of s.exercises) if (performedSets(ex).length) keys.add(exerciseKey(ex.name));
+    st.seconds += t.seconds;
+    for (const ex of s.exercises) if (performedSets(ex).length) keys.add(indexKey(ex.name, unitOf(ex)));
   }
   st.volume = round2(st.volume);
   st.exercises = keys.size;
@@ -349,6 +382,40 @@ export function periodExerciseComparison(index, start, end) {
   return out.sort((a, b) => a.name.localeCompare(b.name, 'de'));
 }
 
+// Absolvierte Sätze je Muskelgruppe laut Katalog (ein Satz zählt für jede beteiligte Gruppe).
+// Eigene Übungen ohne Katalogeintrag werden separat als „nicht zugeordnet“ gezählt.
+export const MAIN_MUSCLES = ['brust', 'schultern', 'ruecken', 'bizeps', 'trizeps', 'bauch', 'gesaess', 'oberschenkel', 'waden'];
+
+export function periodMuscleSets(data, start, end) {
+  const counts = new Map();
+  let unassigned = 0;
+  for (const s of completedSessions(data)) {
+    if (s.date < start || s.date > end) continue;
+    for (const ex of s.exercises) {
+      const n = performedSets(ex).length;
+      if (!n) continue;
+      const entry = catalogFor(ex);
+      if (!entry) {
+        unassigned += n;
+        continue;
+      }
+      for (const m of entry.muscles) counts.set(m, (counts.get(m) ?? 0) + n);
+    }
+  }
+  const list = [...counts.entries()].map(([id, sets]) => ({ id, label: MUSCLES[id] ?? id, sets })).sort((a, b) => b.sets - a.sets);
+  const missing = MAIN_MUSCLES.filter((m) => !counts.has(m));
+  return { list, unassigned, missing };
+}
+
+function muscleMessage(data, start, end, label) {
+  const ms = periodMuscleSets(data, start, end);
+  if (!ms.list.length) return null;
+  let text = `${label} trainierte Bereiche (Sätze, an denen der Bereich laut Übungskatalog beteiligt ist): ${ms.list.map((m) => `${m.label} ${m.sets}`).join(', ')}.`;
+  if (ms.missing.length) text += ` Ohne Satz: ${ms.missing.map((m) => MUSCLES[m]).join(', ')}.`;
+  if (ms.unassigned) text += ` ${ms.unassigned} ${ms.unassigned === 1 ? 'Satz' : 'Sätze'} aus eigenen Übungen ohne Katalogeintrag sind nicht zugeordnet.`;
+  return { tone: 'neutral', text, kind: 'muscles' };
+}
+
 function deltaText(cur, prev, label, unit = '', frac = 0) {
   return `${label} ${fmtNum(prev, frac)}${unit} → ${fmtNum(cur, frac)}${unit} (${fmtDelta(cur - prev, '', frac)})`;
 }
@@ -382,6 +449,8 @@ export function weekFeedback(data, index, weekStart, today) {
       text: `Vergleich zur Vorwoche${isCurrent ? ' (diese Woche läuft noch)' : ''}: ${deltaText(st.count, prev.count, 'Einheiten')}, ${deltaText(st.sets, prev.sets, 'Sätze')}, ${deltaText(st.volume, prev.volume, 'Volumen', ' kg')}.`,
     });
   }
+  const mm = muscleMessage(data, weekStart, addDays(weekStart, 6), isCurrent ? 'Diese Woche' : 'In dieser Woche');
+  if (mm) msgs.push(mm);
   for (const an of periodExerciseAnalyses(index, weekStart, addDays(weekStart, 6))) msgs.push(...exerciseFeedback(an, today, { brief: true }));
   return { stats: st, prev, msgs: msgs.map(tidy) };
 }
@@ -502,7 +571,7 @@ export function overallFeedback(data, ov, today) {
   for (const day of data.plan?.days ?? []) {
     if (!day.weekdays.length) continue;
     for (const ex of day.exercises) {
-      const key = exerciseKey(ex.name);
+      const key = indexKey(ex.name, unitOf(ex));
       if (seen.has(key)) continue;
       seen.add(key);
       const an = index.get(key);

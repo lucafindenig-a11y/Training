@@ -2,13 +2,14 @@
 // Strategie: App-Dateien sofort aus dem Cache liefern und im Hintergrund aktualisieren.
 // Trainingsdaten laufen NIE über diesen Cache.
 
-const CACHE = 'trainingsplan-202611240701';
+const CACHE = 'trainingsplan-202611240934';
 const FILES = [
   './', './index.html', './manifest.webmanifest', './css/style.css',
   './js/main.js', './js/store.js', './js/model.js', './js/analytics.js', './js/dates.js', './js/format.js',
-  './js/ui.js', './js/charts.js',
+  './js/ui.js', './js/charts.js', './js/catalog.js', './js/templates.js',
   './js/views/common.js', './js/views/today.js', './js/views/plan.js', './js/views/session.js',
   './js/views/history.js', './js/views/stats.js', './js/views/settings.js',
+  './js/views/catalog.js', './js/views/templates.js', './js/views/exercise-form.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png', './icons/apple-touch-icon.png',
 ];
 

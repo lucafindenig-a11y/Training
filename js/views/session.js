@@ -6,11 +6,13 @@ import { todayISO, isValidISO, fmtDate, fmtDateLong } from '../dates.js';
 import { esc, fmtNum, parseNum, plural } from '../format.js';
 import {
   findSession, finishSession, deleteSession, replaceSession, moveItem, newSessionExercise, sessionTotals,
-  knownExerciseNames, exerciseKey,
+  knownExerciseNames, unitOf, UNITS, parseRepsTarget, findDay,
 } from '../model.js';
-import { buildExerciseIndex, bestEntry, describeSets, describeTop, isWeighted } from '../analytics.js';
+import { buildExerciseIndex, bestEntry, describeSets, describeTop, isWeighted, indexKey } from '../analytics.js';
+import { catalogFor, inferFocus, EXERCISES } from '../catalog.js';
 import { onAction, onInput, onChange, openSheet, rerender, navigate, confirmDialog, field, showFieldErrors, toast, icon } from '../ui.js';
-import { targetText } from './common.js';
+import { targetText, unitShort, dayFocus, openExerciseInfo, lastSetsLookup, fmtSeconds } from './common.js';
+import { openCatalogPicker } from './catalog.js';
 
 const drafts = new Map(); // id -> { session, dirty }
 
@@ -114,26 +116,36 @@ export function sessionView([id]) {
 
   // Frühere Leistungen (nur Einheiten bis zum Datum dieser Einheit, ohne diese selbst).
   const index = buildExerciseIndex(store.data);
-  const history = (name) => {
-    const rec = index.get(exerciseKey(name));
+  const history = (ex) => {
+    const rec = index.get(indexKey(ex.name, unitOf(ex)));
     if (!rec) return null;
     const entries = rec.entries.filter((e) => e.sessionId !== s.id && e.date <= s.date);
     return entries.length ? { last: entries[entries.length - 1], best: bestEntry(entries), weighted: isWeighted(entries) } : null;
   };
 
-  const cards = s.exercises.map((ex, i) => exerciseCard(s, ex, i, history(ex.name))).join('');
+  const cards = s.exercises.map((ex, i) => exerciseCard(s, ex, i, history(ex))).join('');
   const t = sessionTotals(s);
+  const openSets = s.exercises.filter((e) => !e.skipped).reduce((a, e) => a + e.sets.filter((x) => !x.done).length, 0);
+  const summary = [plural(t.sets, 'Satz', 'Sätze') + ' abgehakt'];
+  if (t.volume) summary.push(`${fmtNum(t.volume, 0)} kg Volumen`);
+  if (t.seconds) summary.push(fmtSeconds(t.seconds));
 
   const footer = live
     ? `<div class="session-actions">
         <button class="btn ghost" data-action="sets-all-done" data-sid="${s.id}">${icon('check')}Alle offenen Sätze abhaken</button>
-        <button class="btn primary big" data-action="session-finish" data-sid="${s.id}">Training abschließen</button>
         <button class="btn link danger" data-action="session-discard" data-sid="${s.id}">Training verwerfen</button>
+      </div>
+      <div class="action-bar">
+        <div class="ab-info"><strong>${plural(t.sets, 'Satz', 'Sätze')} erledigt</strong><span>${openSets ? `${openSets} offen` : 'alle Sätze abgehakt'}</span></div>
+        <button class="btn primary" data-action="session-finish" data-sid="${s.id}">Abschließen</button>
       </div>`
     : `<div class="session-actions">
-        <button class="btn primary big" data-action="draft-save" data-sid="${s.id}">Korrektur speichern</button>
         <button class="btn ghost" data-action="draft-cancel" data-sid="${s.id}">Änderungen verwerfen</button>
         <button class="btn link danger" data-action="session-delete" data-sid="${s.id}">Einheit löschen</button>
+      </div>
+      <div class="action-bar">
+        <div class="ab-info"><strong>Korrektur</strong><span>${esc(fmtDate(s.date))}</span></div>
+        <button class="btn primary" data-action="draft-save" data-sid="${s.id}">Speichern</button>
       </div>`;
 
   return {
@@ -151,7 +163,7 @@ export function sessionView([id]) {
         <label class="field"><span class="field-label">Datum</span>
           <input type="date" data-change="session-date" data-sid="${s.id}" value="${s.date}" max="${todayISO()}">
           <span class="field-hint">${esc(fmtDateLong(s.date))}</span></label>
-        <p class="small muted">${plural(t.sets, 'Satz', 'Sätze')} abgehakt${t.volume ? ` · ${fmtNum(t.volume, 0)} kg Volumen` : ''}</p>
+        <p class="small muted">${esc(summary.join(' · '))}</p>
       </section>
 
       ${cards || '<p class="muted">Noch keine Übungen in diesem Training.</p>'}
@@ -166,7 +178,7 @@ export function sessionView([id]) {
       <div id="restTimer" class="rest-timer" hidden role="timer" aria-live="off">
         <div class="rt-info"><strong class="rt-text"></strong><span class="rt-sub small"></span></div>
         <div class="rt-bar"><span></span></div>
-        <button class="btn small ghost" data-action="timer-add">+15 s</button>
+        <button class="btn small" data-action="timer-add">+15 s</button>
         <button class="icon-btn" data-action="timer-stop" aria-label="Pause beenden">${icon('close')}</button>
       </div>`,
     mount: () => tick(),
@@ -175,6 +187,9 @@ export function sessionView([id]) {
 
 function exerciseCard(s, ex, i, hist) {
   const attrs = `data-sid="${s.id}" data-ex="${ex.id}"`;
+  const unit = unitOf(ex);
+  const u = unitShort(unit);
+  const cat = catalogFor(ex);
   const histLine = hist
     ? `<p class="hist small">Letztes Mal (${fmtDate(hist.last.date)}): <strong>${esc(describeSets(hist.last))}</strong>
         · Bestleistung: ${esc(describeTop(hist.best, hist.weighted))} (${fmtDate(hist.best.date)})</p>`
@@ -185,7 +200,7 @@ function exerciseCard(s, ex, i, hist) {
       <label class="set-field"><input ${attrs} data-set="${j}" data-field="weight" data-input="set-field" inputmode="decimal" autocomplete="off"
         value="${set.weight != null ? esc(String(set.weight).replace('.', ',')) : ''}" placeholder="–" aria-label="Satz ${j + 1}: Gewicht in kg"><span>kg</span></label>
       <label class="set-field"><input ${attrs} data-set="${j}" data-field="reps" data-input="set-field" inputmode="numeric" autocomplete="off"
-        value="${set.reps ?? ''}" placeholder="0" aria-label="Satz ${j + 1}: Wiederholungen"><span>Wdh.</span></label>
+        value="${set.reps ?? ''}" placeholder="0" aria-label="Satz ${j + 1}: ${esc(UNITS[unit].label)}"><span>${esc(u)}</span></label>
       <button class="check ${set.done ? 'on' : ''}" ${attrs} data-set="${j}" data-action="set-toggle" aria-pressed="${set.done}" aria-label="Satz ${j + 1} erledigt">${icon('check')}</button>
       <button class="icon-btn small" ${attrs} data-set="${j}" data-action="set-remove" aria-label="Satz ${j + 1} entfernen">${icon('close')}</button>
     </div>`).join('');
@@ -197,12 +212,13 @@ function exerciseCard(s, ex, i, hist) {
           <h3><span class="ex-num">${i + 1}</span>${esc(ex.name)}</h3>
           <p class="small muted">${ex.target ? `Plan: ${esc(targetText(ex.target))}` : 'Zusätzliche Übung (nicht aus dem Plan)'}</p>
           ${ex.target?.notes ? `<p class="small note-inline">${esc(ex.target.notes)}</p>` : ''}
+          ${cat ? `<p><button class="info-link" style="background:none;border:none;padding:0;cursor:pointer;margin-left:38px" ${attrs} data-action="log-ex-info">${icon('info')}Anleitung</button></p>` : ''}
         </div>
         <div class="row-actions">
-          <button class="icon-btn" ${attrs} data-action="log-ex-move" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="${esc(ex.name)} nach oben">${icon('up')}</button>
-          <button class="icon-btn" ${attrs} data-action="log-ex-move" data-dir="1" ${i === s.exercises.length - 1 ? 'disabled' : ''} aria-label="${esc(ex.name)} nach unten">${icon('down')}</button>
-          <button class="icon-btn" ${attrs} data-action="log-ex-rename" aria-label="${esc(ex.name)} umbenennen">${icon('edit')}</button>
-          <button class="icon-btn danger" ${attrs} data-action="log-ex-delete" aria-label="${esc(ex.name)} aus diesem Training entfernen">${icon('trash')}</button>
+          <button class="icon-btn plain small" ${attrs} data-action="log-ex-move" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="${esc(ex.name)} nach oben">${icon('up')}</button>
+          <button class="icon-btn plain small" ${attrs} data-action="log-ex-move" data-dir="1" ${i === s.exercises.length - 1 ? 'disabled' : ''} aria-label="${esc(ex.name)} nach unten">${icon('down')}</button>
+          <button class="icon-btn plain small" ${attrs} data-action="log-ex-rename" aria-label="${esc(ex.name)} umbenennen">${icon('edit')}</button>
+          <button class="icon-btn plain small danger" ${attrs} data-action="log-ex-delete" aria-label="${esc(ex.name)} aus diesem Training entfernen">${icon('trash')}</button>
         </div>
       </header>
       ${histLine}
@@ -210,7 +226,7 @@ function exerciseCard(s, ex, i, hist) {
         ? `<p class="skipped-note">${icon('skip')}Ausgelassen – zählt nicht in die Auswertung.</p>
            <button class="btn small" ${attrs} data-action="log-ex-skip">${icon('undo')}Doch absolvieren</button>`
         : `<div class="sets">
-            <div class="set-row set-head" aria-hidden="true"><span>Satz</span><span>Gewicht</span><span>Wdh.</span><span>Erledigt</span><span></span></div>
+            <div class="set-row set-head" aria-hidden="true"><span>Satz</span><span>Gewicht</span><span>${esc(unit === 'wdh' ? 'Wdh.' : 'Dauer')}</span><span>Erledigt</span><span></span></div>
             ${rows}
           </div>
           <div class="log-foot">
@@ -286,7 +302,7 @@ onAction('set-toggle', (el) => {
   const c = ctxFrom(el);
   if (!c?.set) return;
   if (!c.set.done && !(Number(c.set.reps) > 0)) {
-    toast('Bitte zuerst die Wiederholungen eintragen.');
+    toast(unitOf(c.ex) === 'wdh' ? 'Bitte zuerst die Wiederholungen eintragen.' : 'Bitte zuerst die Dauer eintragen.');
     return;
   }
   c.set.done = !c.set.done;
@@ -332,13 +348,15 @@ onAction('log-ex-delete', async (el) => {
 });
 
 function exerciseNameSheet({ title, value = '', withSets = false, onDone }) {
-  const names = knownExerciseNames(store.data);
+  const names = [...new Set([...knownExerciseNames(store.data), ...EXERCISES.map((e) => e.name)])].sort((a, b) => a.localeCompare(b, 'de'));
   openSheet({
     title,
     submitLabel: withSets ? 'Hinzufügen' : 'Speichern',
     body: `${field({ label: 'Übung', name: 'name', value, placeholder: 'z. B. Klimmzüge', attrs: 'list="exercise-names-log" maxlength="80" autocomplete="off"' })}
       <datalist id="exercise-names-log">${names.map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
-      ${withSets ? field({ label: 'Sätze', name: 'sets', value: '3', attrs: 'inputmode="numeric" maxlength="2"' }) : ''}
+      ${withSets ? `${field({ label: 'Sätze', name: 'sets', value: '3', attrs: 'inputmode="numeric" maxlength="2"' })}
+        <fieldset><legend class="field-label">Messen in</legend><div class="segmented-input">${Object.entries(UNITS).map(([k, u]) => `
+          <label><input type="radio" name="unit" value="${k}" ${k === 'wdh' ? 'checked' : ''}><span>${esc(u.label)}</span></label>`).join('')}</div></fieldset>` : ''}
       <p class="small muted">Gleiche Namen werden in der Auswertung als dieselbe Übung verglichen.</p>`,
     onSubmit: (form) => {
       const name = form.elements.name.value.trim();
@@ -350,10 +368,27 @@ function exerciseNameSheet({ title, value = '', withSets = false, onDone }) {
         showFieldErrors(form, errors);
         return false;
       }
-      onDone(name, sets);
+      onDone(name, sets, form.querySelector('input[name=unit]:checked')?.value ?? 'wdh');
     },
   });
 }
+
+// Übung im laufenden/zu korrigierenden Training ergänzen (Katalog oder eigene).
+function addToSession(c, { name, catalogId = null, unit = 'wdh', count = 3, reps = null }) {
+  const lastSets = lastSetsLookup()(name, unit);
+  const ex = newSessionExercise({ name, catalogId, unit }, lastSets);
+  while (ex.sets.length < count) ex.sets.push({ ...(ex.sets[ex.sets.length - 1] ?? { reps: null, weight: null }), done: false });
+  ex.sets.length = count;
+  if (!lastSets && reps != null) ex.sets.forEach((x) => { x.reps = reps; });
+  c.s.exercises.push(ex);
+  touch(c, { render: true });
+}
+
+onAction('log-ex-info', (el) => {
+  const c = ctxFrom(el);
+  const entry = c?.ex && catalogFor(c.ex);
+  if (entry) openExerciseInfo(entry);
+});
 
 onAction('log-ex-rename', (el) => {
   const c = ctxFrom(el);
@@ -370,17 +405,22 @@ onAction('log-ex-rename', (el) => {
 onAction('log-ex-add', (el) => {
   const c = ctxFrom(el);
   if (!c) return;
-  exerciseNameSheet({
-    title: 'Übung hinzufügen', withSets: true,
-    onDone: (name, count) => {
-      const rec = buildExerciseIndex(store.data).get(exerciseKey(name));
-      const lastSets = rec ? rec.entries[rec.entries.length - 1].sets : null;
-      const ex = newSessionExercise({ name }, lastSets);
-      while (ex.sets.length < count) ex.sets.push({ ...ex.sets[ex.sets.length - 1], done: false });
-      ex.sets.length = count;
-      c.s.exercises.push(ex);
-      touch(c, { render: true });
+  const day = c.s.dayId ? findDay(store.data.plan, c.s.dayId) : null;
+  openCatalogPicker({
+    title: 'Übung hinzufügen',
+    focus: day ? dayFocus(day) : inferFocus(c.s.title),
+    onPick: (entry) => {
+      document.querySelector('#sheetRoot [data-sheet-close]')?.click();
+      addToSession(c, {
+        name: entry.name, catalogId: entry.id, unit: entry.unit, count: entry.defaults.sets,
+        reps: parseRepsTarget(entry.defaults.reps)?.min ?? null,
+      });
+      toast(`„${entry.name}“ hinzugefügt.`);
     },
+    onCustom: () => exerciseNameSheet({
+      title: 'Eigene Übung hinzufügen', withSets: true,
+      onDone: (name, count, unit) => addToSession(c, { name, unit, count }),
+    }),
   });
 });
 
